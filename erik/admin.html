@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f5f2ec">
+    <title>HNM Atelier — Studio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body class="admin-page">
+    <main class="admin-login-screen" id="adminLoginScreen">
+      <a class="wordmark admin-login-logo" href="index.html" aria-label="HNM Atelier home"><span class="wordmark-primary">HNM</span><span class="wordmark-name">ATELIER</span></a>
+      <section class="login-card">
+        <a class="text-link admin-back-link" href="index.html">← Back to storefront</a>
+        <span class="eyebrow">THE ATELIER STUDIO</span>
+        <h1>Welcome back</h1>
+        <p class="login-intro">Sign in to manage your collection, orders, and storefront.</p>
+        <form id="adminLoginForm">
+          <label for="adminEmail">Admin email</label>
+          <input id="adminEmail" name="email" type="email" placeholder="you@example.com" autocomplete="username" required>
+          <label for="adminPassword">Password</label>
+          <input id="adminPassword" name="password" type="password" placeholder="Enter your password" autocomplete="current-password" required>
+          <button class="button button-dark login-submit" type="submit">Enter the studio <span>→</span></button>
+          <p class="login-message" id="adminLoginMessage" role="status"></p>
+        </form>
+        <p class="admin-notice">Sign-in is verified by the server. Set your admin email and password in the private `.env` file.</p>
+      </section>
+    </main>
+    <main class="admin-view hidden" id="adminApp"></main>
+    <div class="toast" id="adminToast" role="status"></div>
+    <script src="store-data.js"></script>
+    <script src="admin.js"></script>
+  </body>
+</html>
