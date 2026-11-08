@@ -144,13 +144,13 @@ function ordersContent() {
     <div class="admin-panel"><div class="panel-heading"><h2>All orders · ${ordersTotal}</h2></div>${ordersTable(orders, true)}
     ${ordersPages > 1 ? `<div class="orders-pagination"><button data-order-page="${ordersPage - 1}" ${ordersPage <= 1 ? "disabled" : ""}>← Previous</button><span>Page ${ordersPage} of ${ordersPages}</span><button data-order-page="${ordersPage + 1}" ${ordersPage >= ordersPages ? "disabled" : ""}>Next →</button></div>` : ""}</div>
     <div class="admin-panel"><div class="panel-heading"><h2>WatchPays payments · latest ${paymentAttempts.length}</h2></div>${paymentAttemptsTable()}</div>
-    <p class="admin-notice">Payment callbacks from WatchPays are unsigned and are never trusted as proof of payment. Check each payment in your WatchPays merchant dashboard before manually confirming it here. Customer contact and delivery details are visible only in this protected admin panel.</p>`;
+    <p class="admin-notice">WatchPays callbacks are unsigned and are not proof of payment. Verify the exact order and amount in your WatchPays merchant dashboard before confirming a payment here. Customer contact and delivery details are visible only in this protected admin panel.</p>`;
 }
 
 function paymentAttemptsTable() {
   if (!paymentAttempts.length) return `<div class="admin-empty">No online payment attempts yet.</div>`;
   return `<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>MERCHANT ORDER</th><th>CUSTOMER</th><th>AMOUNT</th><th>GATEWAY NOTICE</th><th>STATUS</th></tr></thead><tbody>${paymentAttempts.map((attempt) => `
-    <tr><td><strong>${escapeHTML(attempt.merchantOrderNo)}</strong><small>Gateway: ${escapeHTML(attempt.gatewayOrderNo)}</small></td>
+    <tr><td><strong>${escapeHTML(attempt.merchantOrderNo)}</strong><small>Gateway: ${escapeHTML(attempt.gatewayOrderNo || "Pending")}</small></td>
       <td>${escapeHTML(attempt.customer?.name || "Customer")}<small>${escapeHTML(attempt.customer?.email || "")}</small></td>
       <td>${money(attempt.total)}</td>
       <td>${attempt.unverifiedCallback
@@ -158,7 +158,7 @@ function paymentAttemptsTable() {
         : "No callback received"}</td>
       <td>${attempt.status === "manually_verified"
         ? `<span class="status-pill">Confirmed · ${escapeHTML(attempt.linkedOrderId || "")}</span>`
-        : `<button class="admin-primary-button" data-confirm-payment="${escapeHTML(attempt.merchantOrderNo)}">Verify in WatchPays & confirm</button>`}</td></tr>`).join("")}</tbody></table></div>`;
+        : `<button class="admin-primary-button" data-confirm-payment="${escapeHTML(attempt.id)}">Verify in WatchPays & create order</button>`}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
 function ordersTable(items, allowStatusEdit) {
@@ -358,17 +358,17 @@ function bindActions() {
     }
   }));
   $("#adminApp").querySelectorAll("[data-confirm-payment]").forEach((button) => button.addEventListener("click", async () => {
-    const merchantOrderNo = button.dataset.confirmPayment;
-    if (!window.confirm(`First confirm in the WatchPays dashboard that ${merchantOrderNo} was successfully paid for the exact amount shown. The callback alone is not proof. Continue?`)) return;
+    const attempt = paymentAttempts.find((item) => item.id === button.dataset.confirmPayment);
+    if (!attempt || !window.confirm(`Verify in the WatchPays dashboard that ${attempt.merchantOrderNo} was paid for exactly ${money(attempt.total)}. The callback alone is not proof. Create the order?`)) return;
     button.disabled = true;
     try {
-      const order = await apiRequest(`/api/admin/payment-attempts/${encodeURIComponent(merchantOrderNo)}/confirm`, {
+      const order = await apiRequest(`/api/admin/payment-attempts/${encodeURIComponent(attempt.id)}/confirm`, {
         method: "POST",
         body: "{}"
       });
       await loadAdminData(ordersPage);
       render();
-      showToast(`Payment manually verified. Order ${order.id} created.`);
+      showToast(`Payment verified. Order ${order.id} created.`);
     } catch (error) {
       button.disabled = false;
       showToast(error.message);

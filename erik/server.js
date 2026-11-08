@@ -14,6 +14,7 @@ const { initialProducts } = require("./store-data");
 
 const PORT = Number(process.env.PORT || 8000);
 const DATABASE_NAME = process.env.MONGODB_DB || "hnm_store";
+const WATCHPAYS_CREATE_URL = "https://api.watchpays.com/v1/create";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 const DEFAULT_SESSION_TTL_MS = 60 * 60 * 8 * 1000;
 const REMEMBERED_SESSION_TTL_MS = SESSION_TTL_SECONDS * 1000;
@@ -150,36 +151,18 @@ const orderValidator = {
 const paymentAttemptValidator = {
   $jsonSchema: {
     bsonType: "object",
-    required: ["customer", "shippingAddress", "items", "subtotal", "discount", "total", "gatewayOrderNo", "paymentUrl", "status", "createdAt", "updatedAt"],
+    required: ["customer", "shippingAddress", "items", "subtotal", "discount", "total", "status", "createdAt", "updatedAt"],
     properties: {
       _id: { bsonType: "string" },
-      customer: {
-        bsonType: "object",
-        required: ["name", "email", "phone"],
-        properties: {
-          name: { bsonType: "string", minLength: 1, maxLength: 100 },
-          email: { bsonType: "string", maxLength: 254 },
-          phone: { bsonType: "string", minLength: 7, maxLength: 25 }
-        }
-      },
-      shippingAddress: {
-        bsonType: "object",
-        required: ["line1", "city", "region", "postalCode", "country"],
-        properties: {
-          line1: { bsonType: "string", minLength: 1, maxLength: 150 },
-          line2: { bsonType: "string", maxLength: 150 },
-          city: { bsonType: "string", minLength: 1, maxLength: 80 },
-          region: { bsonType: "string", minLength: 1, maxLength: 80 },
-          postalCode: { bsonType: "string", minLength: 2, maxLength: 16 },
-          country: { bsonType: "string", minLength: 2, maxLength: 80 }
-        }
-      },
+      customer: orderValidator.$jsonSchema.properties.customer,
+      shippingAddress: orderValidator.$jsonSchema.properties.shippingAddress,
       items: orderValidator.$jsonSchema.properties.items,
       subtotal: { bsonType: ["double", "int", "long"], minimum: 0 },
       discount: { bsonType: ["double", "int", "long"], minimum: 0 },
       total: { bsonType: ["double", "int", "long"], minimum: 0 },
-      gatewayOrderNo: { bsonType: "string", minLength: 1, maxLength: 100 },
-      paymentUrl: { bsonType: "string", minLength: 1, maxLength: 2048 },
+      merchantOrderNo: { bsonType: "string", minLength: 1, maxLength: 80 },
+      gatewayOrderNo: { bsonType: "string", maxLength: 100 },
+      paymentUrl: { bsonType: "string", maxLength: 2048 },
       status: { enum: ["pending", "manually_verified"] },
       unverifiedCallback: {
         bsonType: "object",
@@ -635,40 +618,28 @@ async function start() {
     const request = parseCustomerOrder(req.body);
     if (!request) return res.status(400).json({ error: "Check your contact, delivery address, and product quantities." });
 
+    const endpoint = process.env.WATCHPAYS_CREATE_URL?.trim();
+    const merchantId = process.env.WATCHPAYS_MERCHANT_ID?.trim();
+    const apiKey = process.env.WATCHPAYS_API_KEY?.trim();
+    const callbackValue = process.env.WATCHPAYS_CALLBACK_URL?.trim();
+    let callbackUrl;
     try {
-      const mode = process.env.WATCHPAYS_MODE || "test";
-      const endpointValue = process.env.WATCHPAYS_CREATE_URL?.trim();
-      const callbackValue = process.env.WATCHPAYS_CALLBACK_URL?.trim();
-      const merchantId = process.env.WATCHPAYS_MERCHANT_ID?.trim();
-      const apiKey = process.env.WATCHPAYS_API_KEY;
-      const paymentHosts = (process.env.WATCHPAYS_PAYMENT_HOSTS || "")
-        .split(",").map((host) => host.trim().toLowerCase()).filter(Boolean);
-      if (!["test", "live"].includes(mode) || !endpointValue || !callbackValue ||
-          !merchantId || !apiKey || !paymentHosts.length) {
-        return res.status(503).json({
-          error: "WatchPays test checkout is not configured. Set its sandbox endpoint, merchant credentials, public HTTPS callback URL, and allowed payment host in .env."
-        });
-      }
+      callbackUrl = new URL(callbackValue);
+    } catch {
+      return res.status(503).json({ error: "Set a valid WATCHPAYS_CALLBACK_URL in .env before accepting payments." });
+    }
+    const localCallback = ["localhost", "127.0.0.1", "::1"].includes(callbackUrl.hostname);
+    if (endpoint !== WATCHPAYS_CREATE_URL || !merchantId || !apiKey || !callbackValue ||
+        !(callbackUrl.protocol === "https:" ||
+          (process.env.NODE_ENV !== "production" && callbackUrl.protocol === "http:" && localCallback)) ||
+        callbackUrl.username || callbackUrl.password ||
+        (process.env.NODE_ENV === "production" && localCallback)) {
+      return res.status(503).json({
+        error: "WatchPays is not configured. Set WATCHPAYS_CREATE_URL, WATCHPAYS_MERCHANT_ID, WATCHPAYS_API_KEY, and a valid WATCHPAYS_CALLBACK_URL in .env."
+      });
+    }
 
-      let endpoint;
-      let callbackUrl;
-      try {
-        endpoint = new URL(endpointValue);
-        callbackUrl = new URL(callbackValue);
-      } catch {
-        return res.status(503).json({ error: "WatchPays endpoint and callback URL must be valid HTTPS URLs." });
-      }
-      const isLocalHost = (hostname) =>
-        hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
-      if (endpoint.protocol !== "https:" || callbackUrl.protocol !== "https:" ||
-          isLocalHost(callbackUrl.hostname) ||
-          (mode === "test" && endpoint.hostname === "api.watchpays.com") ||
-          (mode === "live" && endpoint.href !== "https://api.watchpays.com/v1/create")) {
-        return res.status(503).json({
-          error: "WatchPays is configured for an invalid endpoint. Test mode requires the provider's sandbox URL and a public HTTPS callback URL."
-        });
-      }
-
+    try {
       const orderItems = [];
       for (const requested of request.requestedItems) {
         const product = await products.findOne({ _id: requested.productId });
@@ -691,6 +662,7 @@ async function start() {
           ...(requested.size ? { size: requested.size } : {})
         });
       }
+
       const subtotal = Math.round(orderItems.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0) * 100) / 100;
       const discount = Math.round(orderItems.reduce((sum, item) =>
         sum + (item.unitPrice - discountedPrice(item.unitPrice, item.discountPercentage)) * item.quantity, 0) * 100) / 100;
@@ -713,8 +685,9 @@ async function start() {
 
       let gatewayResponse;
       try {
-        const response = await fetch(endpoint, {
+        const response = await fetch(WATCHPAYS_CREATE_URL, {
           method: "POST",
+          redirect: "error",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             ...signatureParams,
@@ -739,34 +712,35 @@ async function start() {
         return res.status(502).json({ error: "Could not reach WatchPays. Please try again." });
       }
 
-      const paymentUrl = typeof gatewayResponse.payment_url === "string"
-        ? gatewayResponse.payment_url
-        : "";
-      let paymentHost = "";
+      if (!gatewayResponse || typeof gatewayResponse !== "object" || Array.isArray(gatewayResponse)) {
+        console.error("WatchPays returned an invalid payment response.");
+        return res.status(502).json({ error: "WatchPays returned payment details that could not be verified." });
+      }
+      const paymentUrl = typeof gatewayResponse.payment_url === "string" ? gatewayResponse.payment_url : "";
+      let parsedPaymentUrl;
       try {
-        const parsedPaymentUrl = new URL(paymentUrl);
-        if (parsedPaymentUrl.protocol === "https:" &&
-            !parsedPaymentUrl.username && !parsedPaymentUrl.password) {
-          paymentHost = parsedPaymentUrl.hostname.toLowerCase();
-        }
+        parsedPaymentUrl = new URL(paymentUrl);
       } catch {
-        paymentHost = "";
+        parsedPaymentUrl = null;
       }
       const amountReturned = Number(gatewayResponse.amount);
       if (gatewayResponse.success !== true ||
           gatewayResponse.merchant_order_no !== merchantOrderNo ||
           typeof gatewayResponse.order_no !== "string" ||
           !gatewayResponse.order_no ||
+          gatewayResponse.status !== "created" ||
           !Number.isFinite(amountReturned) ||
           Math.round(amountReturned * 100) !== Math.round(total * 100) ||
-          !paymentHosts.includes(paymentHost)) {
-        console.error("WatchPays returned an invalid or mismatched payment response.");
+          !parsedPaymentUrl || parsedPaymentUrl.protocol !== "https:" ||
+          parsedPaymentUrl.username || parsedPaymentUrl.password) {
+        console.error("WatchPays returned invalid or mismatched payment details.");
         return res.status(502).json({ error: "WatchPays returned payment details that could not be verified." });
       }
 
       const now = new Date();
       await paymentAttempts.insertOne({
         _id: merchantOrderNo,
+        merchantOrderNo,
         customer: request.customer,
         shippingAddress: request.shippingAddress,
         items: orderItems,
@@ -779,12 +753,7 @@ async function start() {
         createdAt: now,
         updatedAt: now
       });
-      return res.status(201).json({
-        merchantOrderNo,
-        paymentUrl,
-        amount,
-        status: "pending"
-      });
+      return res.status(201).json({ paymentUrl, status: "pending" });
     } catch (error) {
       if (error.status) return res.status(error.status).json({ error: error.message });
       return next(error);
@@ -794,7 +763,7 @@ async function start() {
   app.get("/api/payments/watchpays/callback", (_req, res) => {
     res.set("Cache-Control", "no-store");
     return res.type("html").send(
-      "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Payment received</title><body><main><h1>Payment status is being checked</h1><p>Your payment notification is not treated as confirmation until it is verified in the WatchPays merchant dashboard.</p><a href=\"/\">Return to HNM Atelier</a></main></body></html>"
+      "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Payment status</title><body><main><h1>Thank you for shopping with HNM Atelier</h1><p>Your payment status is being checked. Payment notifications are not considered proof of payment until verified by the store.</p><a href=\"/\">Return to the store</a></main></body></html>"
     );
   });
 
@@ -1045,7 +1014,8 @@ async function start() {
         .toArray();
       return res.json({
         attempts: attempts.map(({ _id, paymentUrl: _paymentUrl, ...attempt }) => ({
-          merchantOrderNo: String(_id),
+          id: String(_id),
+          merchantOrderNo: attempt.merchantOrderNo || String(_id),
           ...attempt
         }))
       });
@@ -1098,13 +1068,7 @@ async function start() {
         await orders.insertOne(order, { session: mongoSession });
         const updatedAttempt = await paymentAttempts.updateOne(
           { _id: req.params.id, status: "pending" },
-          {
-            $set: {
-              status: "manually_verified",
-              linkedOrderId: order._id,
-              updatedAt: now
-            }
-          },
+          { $set: { status: "manually_verified", linkedOrderId: order._id, updatedAt: now } },
           { session: mongoSession }
         );
         if (!updatedAttempt.modifiedCount) {

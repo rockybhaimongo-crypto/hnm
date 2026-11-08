@@ -701,7 +701,6 @@ $("#checkoutForm").addEventListener("submit", async (event) => {
         items
       })
     });
-    message.textContent = `Payment created for ${result.merchantOrderNo}. Complete payment in WatchPays; the shop will confirm it after manual verification.`;
     window.location.assign(result.paymentUrl);
   } catch (error) {
     message.textContent = error.message;
