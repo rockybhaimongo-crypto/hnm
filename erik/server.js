@@ -9,7 +9,7 @@ const express = require("express");
 const rateLimit = require("express-rate-limit");
 const session = require("express-session");
 const helmet = require("helmet");
-const { Int32, MongoClient } = require("mongodb");
+const { Int32, MongoClient, ObjectId } = require("mongodb");
 const { initialProducts } = require("./store-data");
 
 const PORT = Number(process.env.PORT || 8000);
@@ -213,10 +213,12 @@ const settingsValidator = {
 const customerValidator = {
   $jsonSchema: {
     bsonType: "object",
-    required: ["name", "email", "passwordHash", "createdAt"],
+    required: ["name", "passwordHash", "createdAt"],
+    anyOf: [{ required: ["email"] }, { required: ["phone"] }],
     properties: {
       name: { bsonType: "string", minLength: 2, maxLength: 80 },
       email: { bsonType: "string", minLength: 3, maxLength: 254 },
+      phone: { bsonType: "string", minLength: 8, maxLength: 16 },
       passwordHash: { bsonType: "string", minLength: 1, maxLength: 100 },
       createdAt: { bsonType: "date" }
     }
@@ -259,6 +261,20 @@ function discountedPrice(price, percentage) {
 
 function cleanText(value, maxLength) {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
+}
+
+function parseCustomerIdentifier(value) {
+  const identifier = typeof value === "string" ? value.trim() : "";
+  if (identifier.includes("@")) {
+    const email = identifier.toLowerCase();
+    return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+      ? { email }
+      : null;
+  }
+  const digits = identifier.replace(/\D/g, "");
+  return digits.length >= 7 && digits.length <= 15
+    ? { phone: `+${digits}` }
+    : null;
 }
 
 function isProductImageUrl(value) {
@@ -393,6 +409,11 @@ function loginRequired(req, res, next) {
   return res.status(401).json({ error: "Admin sign-in required." });
 }
 
+function customerRequired(req, res, next) {
+  if (req.session.customer?.email) return next();
+  return res.status(401).json({ error: "Create an account or sign in to save your wishlist." });
+}
+
 function sameOriginRequest(req, res, next) {
   const origin = req.get("origin");
   if (origin) {
@@ -433,7 +454,20 @@ async function start() {
   const paymentAttempts = db.collection("payment_attempts");
   const storeSettings = db.collection("store_settings");
   const customers = db.collection("customers");
-  await customers.createIndex({ email: 1 }, { unique: true, name: "customer_email_unique" });
+  const customerIndexes = await customers.listIndexes().toArray();
+  if (customerIndexes.some((index) => index.name === "customer_email_unique")) {
+    await customers.dropIndex("customer_email_unique");
+  }
+  await Promise.all([
+    customers.createIndex(
+      { email: 1 },
+      { unique: true, name: "customer_email_unique", partialFilterExpression: { email: { $type: "string" } } }
+    ),
+    customers.createIndex(
+      { phone: 1 },
+      { unique: true, name: "customer_phone_unique", partialFilterExpression: { phone: { $type: "string" } } }
+    )
+  ]);
   await paymentAttempts.createIndex({ createdAt: -1 }, { name: "payment_attempts_created_at" });
 
   const starterProducts = new Map(initialProducts.map((product) => [product.id, product]));
@@ -862,8 +896,49 @@ async function start() {
     res.set("Cache-Control", "no-store");
     const account = req.session.customer;
     return res.json({
-      account: account ? { name: account.name, email: account.email } : null
+      account: account ? { name: account.name, email: account.email || "", phone: account.phone || "" } : null
     });
+  });
+
+  app.get("/api/account/wishlist", customerRequired, async (req, res, next) => {
+    try {
+      const customer = await customers.findOne(
+        { _id: new ObjectId(req.session.customer.id) },
+        { projection: { wishlist: 1 } }
+      );
+      if (!customer) return res.status(401).json({ error: "Sign in again to access your wishlist." });
+      res.set("Cache-Control", "no-store");
+      return res.json({ productIds: customer.wishlist || [] });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.put("/api/account/wishlist", customerRequired, sameOriginJson, async (req, res, next) => {
+    const productIds = req.body?.productIds;
+    if (!Array.isArray(productIds) || productIds.length > 100 ||
+        productIds.some((id) => typeof id !== "string" || !id.trim() || id.length > 100) ||
+        new Set(productIds).size !== productIds.length) {
+      return res.status(400).json({ error: "The wishlist must contain up to 100 unique product IDs." });
+    }
+    try {
+      const existingProducts = await products.find(
+        { _id: { $in: productIds } },
+        { projection: { _id: 1 } }
+      ).toArray();
+      if (existingProducts.length !== productIds.length) {
+        return res.status(400).json({ error: "A wishlist product is no longer available. Refresh and try again." });
+      }
+      const result = await customers.updateOne(
+        { _id: new ObjectId(req.session.customer.id) },
+        { $set: { wishlist: productIds, wishlistUpdatedAt: new Date() } }
+      );
+      if (!result.matchedCount) return res.status(401).json({ error: "Sign in again to save your wishlist." });
+      res.set("Cache-Control", "no-store");
+      return res.json({ productIds });
+    } catch (error) {
+      return next(error);
+    }
   });
 
   app.post("/api/account/register", rateLimit({
@@ -874,31 +949,30 @@ async function start() {
     message: { error: "Too many account creation attempts. Try again in 15 minutes." }
   }), sameOriginJson, async (req, res, next) => {
     const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
-    const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+    const identifier = parseCustomerIdentifier(req.body?.identifier);
     const password = typeof req.body?.password === "string" ? req.body.password : "";
-    if (name.length < 2 || name.length > 80 || email.length > 254 ||
-        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
+    if (name.length < 2 || name.length > 80 || !identifier ||
         Buffer.byteLength(password, "utf8") > 72 || password.length < 12) {
-      return res.status(400).json({ error: "Enter a valid name and email, and a password of at least 12 characters." });
+      return res.status(400).json({ error: "Enter a valid name and email or phone number, and a password of at least 12 characters." });
     }
     try {
-      const existing = await customers.findOne({ email }, { projection: { _id: 1 } });
-      if (existing) return res.status(409).json({ error: "An account with this email already exists. Sign in instead." });
+      const existing = await customers.findOne(identifier, { projection: { _id: 1 } });
+      if (existing) return res.status(409).json({ error: "An account with this email or phone number already exists. Sign in instead." });
 
       const passwordHash = await bcrypt.hash(password, 12);
-      const customer = { name, email, passwordHash, createdAt: new Date() };
+      const customer = { name, ...identifier, passwordHash, createdAt: new Date() };
       const result = await customers.insertOne(customer);
       await new Promise((resolve, reject) => {
         req.session.regenerate((error) => error ? reject(error) : resolve());
       });
-      req.session.customer = { id: String(result.insertedId), name, email };
+      req.session.customer = { id: String(result.insertedId), name, ...identifier };
       req.session.cookie.maxAge = req.body?.rememberMe === true
         ? REMEMBERED_SESSION_TTL_MS
         : DEFAULT_SESSION_TTL_MS;
-      return res.status(201).json({ account: { name, email } });
+      return res.status(201).json({ account: { name, email: identifier.email || "", phone: identifier.phone || "" } });
     } catch (error) {
       if (error.code === 11000) {
-        return res.status(409).json({ error: "An account with this email already exists. Sign in instead." });
+        return res.status(409).json({ error: "An account with this email or phone number already exists. Sign in instead." });
       }
       return next(error);
     }
@@ -911,14 +985,13 @@ async function start() {
     legacyHeaders: false,
     message: { error: "Too many sign-in attempts. Try again in 15 minutes." }
   }), sameOriginJson, async (req, res, next) => {
-    const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+    const identifier = parseCustomerIdentifier(req.body?.identifier);
     const password = typeof req.body?.password === "string" ? req.body.password : "";
-    if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
-        Buffer.byteLength(password, "utf8") > 72) {
-      return res.status(400).json({ error: "Enter a valid email address and password." });
+    if (!identifier || Buffer.byteLength(password, "utf8") > 72) {
+      return res.status(400).json({ error: "Enter a valid email or phone number and password." });
     }
     try {
-      const customer = await customers.findOne({ email });
+      const customer = await customers.findOne(identifier);
       const matchesPassword = await bcrypt.compare(password, customer?.passwordHash || customerPasswordDummyHash);
       if (!customer || !matchesPassword) {
         return res.status(401).json({ error: "Email or password is incorrect." });
@@ -929,12 +1002,13 @@ async function start() {
       req.session.customer = {
         id: String(customer._id),
         name: customer.name,
-        email: customer.email
+        ...(customer.email ? { email: customer.email } : {}),
+        ...(customer.phone ? { phone: customer.phone } : {})
       };
       req.session.cookie.maxAge = req.body?.rememberMe === true
         ? REMEMBERED_SESSION_TTL_MS
         : DEFAULT_SESSION_TTL_MS;
-      return res.json({ account: { name: customer.name, email: customer.email } });
+      return res.json({ account: { name: customer.name, email: customer.email || "", phone: customer.phone || "" } });
     } catch (error) {
       return next(error);
     }

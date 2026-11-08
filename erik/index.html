@@ -26,6 +26,10 @@
           <button class="icon-button account-button" id="accountButton" aria-label="Sign in">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"></circle><path d="M4.8 20a7.2 7.2 0 0 1 14.4 0"></path></svg>
           </button>
+          <button class="icon-button wishlist-toggle" id="wishlistButton" aria-label="Wishlist">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 8.7c0 5.2-8.8 11-8.8 11s-8.8-5.8-8.8-11a4.7 4.7 0 0 1 8.8-2.2 4.7 4.7 0 0 1 8.8 2.2Z"></path></svg>
+            <span class="cart-count" id="wishlistCount">0</span>
+          </button>
           <a class="icon-button support-button" href="mailto:hnm@gmail.com" aria-label="Customer support: email hnm@gmail.com" title="Customer support">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13v-2a8 8 0 0 1 16 0v2"></path><rect x="3" y="12" width="4" height="7" rx="2"></rect><rect x="17" y="12" width="4" height="7" rx="2"></rect><path d="M19 19a4 4 0 0 1-4 3h-2"></path></svg>
           </a>
@@ -117,28 +121,43 @@
           <div class="product-grid" id="productGrid" aria-live="polite"></div>
         </section>
 
-        <section class="story-section" id="story">
-          <div class="story-image-wrap">
-            <img src="https://images.unsplash.com/photo-1529139574466-a303027c1d8b?auto=format&fit=crop&w=1300&q=85" alt="A considered look from the HNM Atelier collection">
-          </div>
-          <div class="story-copy">
-            <span class="eyebrow">THE HNM ATELIER POINT OF VIEW</span>
-            <h2>Style that<br>feels like you.</h2>
-            <p>A considered edit of fashion and everyday essentials, chosen for the way you live and the details that make a look your own.</p>
-            <a class="text-link" href="#shop">Find your next favourite <b aria-hidden="true">↗</b></a>
-            <span class="story-number">HNM ATELIER · PERSONAL STYLE, THOUGHTFULLY EDITED</span>
-          </div>
-        </section>
-        <section class="newsletter page-width">
-          <div><span class="eyebrow">THE ATELIER EDIT</span><h2>A little inspiration, well chosen.</h2><p>Explore new arrivals, considered details, and pieces to make your own.</p></div>
-          <a class="button button-light newsletter-cta" href="#shop">Explore the edit <span aria-hidden="true">↗</span></a>
-        </section>
       </main>
 
       <footer class="site-footer">
-        <a class="wordmark footer-wordmark" href="#" aria-label="HNM Atelier home"><span class="wordmark-primary">HNM</span><span class="wordmark-name">ATELIER</span></a>
-        <p>Personal style, thoughtfully edited.</p>
-        <span>© 2026 HNM ATELIER</span>
+        <div class="footer-inner">
+          <div class="footer-intro">HNM ATELIER · CONSIDERED STYLE, MADE PERSONAL</div>
+          <div class="footer-columns">
+            <section class="footer-column" aria-labelledby="footerShopTitle">
+              <h2 id="footerShopTitle">Shop</h2>
+              <a href="#shop" data-footer-department="Ladies">Ladies</a>
+              <a href="#shop" data-footer-department="Home">Home</a>
+              <a href="#shop" data-footer-department="Beauty">Beauty</a>
+              <a href="#shop" data-footer-category="baggy-pants">Baggy pants</a>
+            </section>
+            <section class="footer-column" aria-labelledby="footerAboutTitle">
+              <h2 id="footerAboutTitle">About HNM</h2>
+              <a href="#shop" data-footer-department="All">Our collections</a>
+              <a href="#quickCategories">The Atelier edit</a>
+              <a href="mailto:hnm@gmail.com">Get in touch</a>
+            </section>
+            <section class="footer-column" aria-labelledby="footerHelpTitle">
+              <h2 id="footerHelpTitle">Help</h2>
+              <a href="mailto:hnm@gmail.com">Customer support</a>
+              <button type="button" data-footer-account>My account</button>
+              <button type="button" data-footer-wishlist>My wishlist</button>
+            </section>
+            <section class="footer-column footer-membership" aria-labelledby="footerMemberTitle">
+              <h2 id="footerMemberTitle">Become a member</h2>
+              <p>Create an account to save your wishlist and enjoy a more personal edit.</p>
+              <button class="footer-signup" type="button" id="footerSignup">Sign up now</button>
+            </section>
+          </div>
+          <div class="footer-bottom">
+            <a class="wordmark footer-wordmark" href="#" aria-label="HNM Atelier home"><span class="wordmark-primary">HNM</span><span class="wordmark-name">ATELIER</span></a>
+            <p>Personal style, thoughtfully edited.</p>
+            <span>© 2026 HNM ATELIER</span>
+          </div>
+        </div>
       </footer>
     </div>
 
@@ -162,8 +181,8 @@
         <form id="loginForm">
           <label for="loginName" id="loginNameLabel" class="hidden">Full name</label>
           <input id="loginName" class="hidden" type="text" placeholder="Your name" autocomplete="name" maxlength="80" minlength="2">
-          <label for="loginEmail">Email address</label>
-          <input id="loginEmail" type="email" placeholder="you@example.com" autocomplete="username" maxlength="254" required>
+          <label for="loginIdentifier">Email or phone number</label>
+          <input id="loginIdentifier" type="text" placeholder="you@example.com or +91 98765 43210" autocomplete="username" inputmode="text" maxlength="254" required>
           <label for="loginPassword">Password</label>
           <input id="loginPassword" type="password" placeholder="Enter your password" autocomplete="current-password" minlength="12" maxlength="72" required>
           <label for="loginPasswordConfirm" id="loginPasswordConfirmLabel" class="hidden">Confirm password</label>
@@ -201,9 +220,14 @@
             <label>Country<input name="country" autocomplete="country-name" maxlength="80" required></label>
           </div>
           <p class="checkout-message" id="checkoutMessage" role="status"></p>
-          <button class="button button-dark checkout-button" type="submit" id="placeOrderButton">Pay securely with WatchPays <span>→</span></button>
+          <button class="button button-dark checkout-button" type="submit" id="placeOrderButton">Pay securely online <span>→</span></button>
         </form>
       </div>
+    </aside>
+    <aside class="cart-drawer wishlist-drawer" id="wishlistDrawer" aria-label="Wishlist" aria-hidden="true">
+      <div class="drawer-heading"><div><span class="eyebrow">SAVED FOR LATER</span><h2>Your wishlist <span id="wishlistItemCount">(0)</span></h2></div><button class="modal-close" id="closeWishlist" aria-label="Close wishlist">×</button></div>
+      <div class="wishlist-items" id="wishlistItems"></div>
+      <div class="wishlist-empty" id="wishlistEmpty"><span class="empty-bag">♡</span><h3>Your wishlist is waiting.</h3><p>Save the pieces you love and find them here.</p><button class="button button-dark" id="continueWishlist">Explore the collection <span>→</span></button></div>
     </aside>
     <div class="toast" id="toast" role="status"></div>
     <script src="store-data.js"></script>

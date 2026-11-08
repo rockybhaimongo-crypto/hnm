@@ -40,6 +40,11 @@ const FormeStoreData = (() => {
       id: "p22", name: "Half Sleeve Contrast Raglan Tee", department: "Ladies", category: "Clothing", quickCategory: "tops", price: 1699, stock: 10, badge: "NEW",
       image: "/product-images/half-sleeve-contrast-raglan-tee-1.png",
       images: [1, 2, 3, 4].map((number) => `/product-images/half-sleeve-contrast-raglan-tee-${number}.png`)
+    },
+    {
+      id: "p23", name: "TRF BAGGY OVERSIZE MID-WAIST JEANS WITH SEAM DETAIL", department: "Ladies", category: "Clothing", quickCategory: "baggy-pants", price: 3950, stock: 10, badge: "NEW",
+      image: "/product-images/trf-baggy-oversize-mid-waist-jeans-with-seam-detail-1.png",
+      images: [1, 2, 3, 4].map((number) => `/product-images/trf-baggy-oversize-mid-waist-jeans-with-seam-detail-${number}.png`)
     }
   ];
   const initialOrders = [

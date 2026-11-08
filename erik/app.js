@@ -17,6 +17,7 @@ let settings = {
   ]
 };
 let favorites = new Set(read("forme-favorites", []));
+let guestFavorites = new Set(favorites);
 let activeDepartment = "Ladies";
 let activeQuickCategory = "";
 let quickCategoryReturnDepartment = "Ladies";
@@ -28,6 +29,10 @@ let heroTransitionTimer;
 let account = null;
 let accountMode = "signin";
 let accountSessionError = "";
+let accountSessionLoaded = false;
+let accountWishlistLoaded = false;
+let pendingWishlistOpen = false;
+let pendingWishlistProductId = "";
 const DEFAULT_DISCOUNT_PERCENTAGE = 20;
 const heroSlideInterval = 5600;
 const reducedMotionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -126,7 +131,7 @@ function renderProducts() {
       : activeQuickCategory === "baggy-pants"
         ? "Baggy pants edit"
       : `${activeQuickCategory[0].toUpperCase()}${activeQuickCategory.slice(1)} edit`
-    : activeDepartment === "All" ? "The complete edit" : `${activeDepartment} collection`;
+    : activeDepartment === "All" ? "The complete edit" : activeDepartment === "Ladies" ? "Buy Women's Collection Online" : `${activeDepartment} collection`;
   $("#backToCollection").hidden = !activeQuickCategory;
   $("#viewAllLink").hidden = Boolean(activeQuickCategory);
   $("#storeStatus").hidden = !storeLoadError;
@@ -143,6 +148,7 @@ function renderProducts() {
     : storeLoadError ? "" : visible.length ? visible.map(renderProductCard).join("") : `<p class="empty-results">Nothing here just yet. Try another search or browse all pieces.</p>`;
   const winterProducts = products.filter((product) => !product.quickCategory && product.department === "Ladies" && product.category === "Clothing").slice(0, 4);
   $("#winterProductGrid").innerHTML = storeLoadError ? "" : winterProducts.map(renderProductCard).join("");
+  renderWishlist();
   observeReveal($("#productGrid").querySelectorAll(".product-card"));
   observeReveal($("#winterProductGrid").querySelectorAll(".product-card"));
 }
@@ -304,7 +310,27 @@ function renderCart() {
   $("#cartSubtotal").textContent = money(subtotal);
 }
 
+function renderWishlist() {
+  const savedProducts = products.filter((product) => favorites.has(product.id));
+  $("#wishlistCount").textContent = savedProducts.length;
+  $("#wishlistItemCount").textContent = `(${savedProducts.length})`;
+  $("#wishlistItems").innerHTML = savedProducts.map((product) => `
+    <article class="wishlist-line">
+      <img src="${escapeHTML(product.image)}" alt="">
+      <div class="wishlist-line-info">
+        <div class="wishlist-line-name">${escapeHTML(product.name)}</div>
+        <div class="wishlist-line-price">${money(salePrice(product))}</div>
+        <div class="wishlist-line-actions">
+          <button type="button" data-wishlist-view="${escapeHTML(product.id)}">View details</button>
+          <button type="button" data-wishlist-remove="${escapeHTML(product.id)}">Remove</button>
+        </div>
+      </div>
+    </article>`).join("");
+  $("#wishlistEmpty").classList.toggle("hidden", savedProducts.length > 0);
+}
+
 function openCart() {
+  closeWishlist();
   $("#cartDrawer").classList.add("open");
   $("#cartDrawer").setAttribute("aria-hidden", "false");
   $("#drawerScrim").classList.remove("hidden");
@@ -312,14 +338,49 @@ function openCart() {
 function closeCart() {
   $("#cartDrawer").classList.remove("open");
   $("#cartDrawer").setAttribute("aria-hidden", "true");
-  $("#drawerScrim").classList.add("hidden");
+  if (!$("#wishlistDrawer").classList.contains("open")) $("#drawerScrim").classList.add("hidden");
+}
+function requestWishlistSignup(productId = "") {
+  pendingWishlistOpen = true;
+  pendingWishlistProductId = productId;
+  accountMode = "register";
+  openLogin();
+  $("#loginIntro").textContent = "Create an account to save your wishlist across devices.";
+}
+async function openWishlist() {
+  if (!accountSessionLoaded && !await loadAccountSession()) {
+    showToast(accountSessionError);
+    return;
+  }
+  if (!account) {
+    requestWishlistSignup();
+    return;
+  }
+  if (!accountWishlistLoaded) {
+    try {
+      await syncAccountWishlist();
+    } catch (error) {
+      showToast(error.message);
+      return;
+    }
+  }
+  closeCart();
+  renderWishlist();
+  $("#wishlistDrawer").classList.add("open");
+  $("#wishlistDrawer").setAttribute("aria-hidden", "false");
+  $("#drawerScrim").classList.remove("hidden");
+}
+function closeWishlist() {
+  $("#wishlistDrawer").classList.remove("open");
+  $("#wishlistDrawer").setAttribute("aria-hidden", "true");
+  if (!$("#cartDrawer").classList.contains("open")) $("#drawerScrim").classList.add("hidden");
 }
 function openLogin() {
   $("#loginModal").classList.remove("hidden");
   renderAccountDialog();
   if (!account && accountSessionError) $("#loginMessage").textContent = accountSessionError;
   else if (account) $("#signOutButton").focus();
-  else $("#loginEmail").focus();
+  else $("#loginIdentifier").focus();
 }
 function setAccountMode(mode) {
   accountMode = mode;
@@ -356,7 +417,7 @@ function renderAccountDialog() {
     $("#loginTitle").textContent = "Welcome, " + account.name;
     $("#loginIntro").textContent = "Your account is ready whenever you are.";
     $("#accountGreeting").textContent = account.name;
-    $("#accountEmail").textContent = account.email;
+    $("#accountEmail").textContent = account.email || account.phone;
     $("#loginForm").classList.add("hidden");
     $("#loginSwitch").classList.add("hidden");
     $("#accountSignedIn").classList.remove("hidden");
@@ -375,8 +436,54 @@ function updateAccount(accountInfo) {
   if (account) {
     const nameField = $("#checkoutForm [name='name']");
     const emailField = $("#checkoutForm [name='email']");
+    const phoneField = $("#checkoutForm [name='phone']");
     if (!nameField.value) nameField.value = account.name;
-    if (!emailField.value) emailField.value = account.email;
+    if (!emailField.value && account.email) emailField.value = account.email;
+    if (!phoneField.value && account.phone) phoneField.value = account.phone;
+  }
+}
+async function syncAccountWishlist() {
+  const result = await apiRequest("/api/account/wishlist");
+  if (!Array.isArray(result.productIds)) throw new Error("The saved wishlist response is invalid.");
+  const productIds = new Set([...result.productIds, ...guestFavorites]);
+  if (pendingWishlistProductId) productIds.add(pendingWishlistProductId);
+  const mergedIds = [...productIds];
+  if (mergedIds.length > 100) {
+    throw new Error("Your wishlist can save up to 100 products. Remove some items and try again.");
+  }
+  if (mergedIds.length !== result.productIds.length ||
+      mergedIds.some((id, index) => id !== result.productIds[index])) {
+    await apiRequest("/api/account/wishlist", {
+      method: "PUT",
+      body: JSON.stringify({ productIds: mergedIds })
+    });
+  }
+  favorites = new Set(mergedIds);
+  guestFavorites.clear();
+  saveStore("forme-favorites", mergedIds);
+  renderProducts();
+  accountWishlistLoaded = true;
+}
+async function setWishlistMembership(id, shouldSave) {
+  const previous = new Set(favorites);
+  if (shouldSave) favorites.add(id);
+  else favorites.delete(id);
+  const productIds = [...favorites];
+  saveStore("forme-favorites", productIds);
+  renderProducts();
+  try {
+    const result = await apiRequest("/api/account/wishlist", {
+      method: "PUT",
+      body: JSON.stringify({ productIds })
+    });
+    favorites = new Set(result.productIds);
+    saveStore("forme-favorites", result.productIds);
+    renderProducts();
+  } catch (error) {
+    favorites = previous;
+    saveStore("forme-favorites", [...favorites]);
+    renderProducts();
+    showToast(error.message);
   }
 }
 async function loadAccountSession() {
@@ -384,9 +491,19 @@ async function loadAccountSession() {
     const result = await apiRequest("/api/account/session");
     updateAccount(result.account);
     accountSessionError = "";
+    accountSessionLoaded = true;
+    if (account) {
+      await syncAccountWishlist();
+    } else {
+      favorites.clear();
+      saveStore("forme-favorites", []);
+      renderProducts();
+    }
+    return true;
   } catch (error) {
     accountSessionError = "We couldn't check your account right now. Please try again.";
     console.error("Could not load customer account session:", error);
+    return false;
   }
 }
 function applyStoreSettings() {
@@ -401,6 +518,9 @@ function applyStoreSettings() {
     ["#heroImage2", settings.heroImage2],
     ["#heroImage3", settings.heroImage3]
   ];
+  const hero = $("#hero");
+  hero.style.removeProperty("aspect-ratio");
+  hero.dataset.aspectImageUrl = "";
   let firstVisibleSlide = true;
   for (const [selector, imageUrl] of heroImages) {
     const image = $(selector);
@@ -409,6 +529,14 @@ function applyStoreSettings() {
     image.classList.toggle("is-active", Boolean(url) && firstVisibleSlide);
     image.classList.remove("is-leaving");
     if (url) {
+      if (firstVisibleSlide) {
+        hero.dataset.aspectImageUrl = url;
+        image.addEventListener("load", () => {
+          if (hero.dataset.aspectImageUrl === url && image.naturalWidth && image.naturalHeight) {
+            hero.style.aspectRatio = `${image.naturalWidth} / ${image.naturalHeight}`;
+          }
+        }, { once: true });
+      }
       image.src = url;
       firstVisibleSlide = false;
     } else {
@@ -462,7 +590,7 @@ const revealObserver = "IntersectionObserver" in window
   : null;
 if (!reducedMotionPreference.matches && revealObserver) {
   document.documentElement.classList.add("reveal-ready");
-  observeReveal(document.querySelectorAll(".quick-category-heading, .quick-categories, .winter-heading, .department-heading, .category-strip, .section-heading, .shop-toolbar, .story-section, .newsletter, .site-footer"));
+  observeReveal(document.querySelectorAll(".quick-category-heading, .quick-categories, .winter-heading, .department-heading, .category-strip, .section-heading, .shop-toolbar, .site-footer"));
 }
 
 $("main").addEventListener("click", (event) => {
@@ -484,9 +612,11 @@ $("main").addEventListener("click", (event) => {
   }
   if (favoriteButton) {
     const id = favoriteButton.dataset.favorite;
-    favorites.has(id) ? favorites.delete(id) : favorites.add(id);
-    saveStore("forme-favorites", [...favorites]);
-    renderProducts();
+    if (!account) {
+      requestWishlistSignup(id);
+      return;
+    }
+    setWishlistMembership(id, !favorites.has(id));
   }
 });
 $("main").addEventListener("keydown", (event) => {
@@ -559,6 +689,30 @@ $("#departmentGrid").addEventListener("click", (event) => {
   setDepartment(card.dataset.department);
   scrollToSection($("#shop"));
 });
+$(".site-footer").addEventListener("click", (event) => {
+  const departmentLink = event.target.closest("[data-footer-department]");
+  const categoryLink = event.target.closest("[data-footer-category]");
+  if (departmentLink) {
+    event.preventDefault();
+    setDepartment(departmentLink.dataset.footerDepartment);
+    scrollToSection($("#shop"));
+  }
+  if (categoryLink) {
+    event.preventDefault();
+    $("#productSearch").value = "";
+    quickCategoryReturnDepartment = activeDepartment;
+    activeDepartment = "All";
+    activeQuickCategory = categoryLink.dataset.footerCategory;
+    renderProducts();
+    scrollToSection($("#shop"));
+  }
+  if (event.target.closest("[data-footer-account]")) openLogin();
+  if (event.target.closest("[data-footer-wishlist]")) openWishlist();
+});
+$("#footerSignup").addEventListener("click", () => {
+  accountMode = "register";
+  openLogin();
+});
 $("#quickCategories").addEventListener("click", (event) => {
   const category = event.target.closest("[data-quick-category]");
   if (!category) return;
@@ -596,14 +750,14 @@ $("#loginModal").addEventListener("click", (event) => {
 $("#loginSwitch").addEventListener("click", (event) => {
   if (event.target.closest("#createAccount")) {
     setAccountMode(accountMode === "signin" ? "register" : "signin");
-    $("#loginEmail").focus();
+    $("#loginIdentifier").focus();
   }
 });
 $("#loginForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const registering = accountMode === "register";
   const name = $("#loginName").value.trim();
-  const email = $("#loginEmail").value.trim();
+  const identifier = $("#loginIdentifier").value.trim();
   const password = $("#loginPassword").value;
   if (registering && password !== $("#loginPasswordConfirm").value) {
     $("#loginMessage").textContent = "The passwords don't match.";
@@ -618,14 +772,27 @@ $("#loginForm").addEventListener("submit", async (event) => {
       method: "POST",
       body: JSON.stringify({
         ...(registering ? { name } : {}),
-        email,
+        identifier,
         password,
         rememberMe: $("#rememberMe").checked
       })
     });
     updateAccount(result.account);
     accountSessionError = "";
+    accountSessionLoaded = true;
     renderAccountDialog();
+    try {
+      await syncAccountWishlist();
+    } catch (error) {
+      $("#accountMessage").textContent = `Your account is ready, but the wishlist could not be saved: ${error.message}`;
+      return;
+    }
+    if (pendingWishlistOpen) {
+      pendingWishlistOpen = false;
+      pendingWishlistProductId = "";
+      $("#loginModal").classList.add("hidden");
+      openWishlist();
+    }
   } catch (error) {
     $("#loginMessage").textContent = error.message;
   } finally {
@@ -640,9 +807,15 @@ $("#accountSignedIn").addEventListener("click", async (event) => {
   try {
     await apiRequest("/api/account/logout", { method: "POST", body: "{}" });
     updateAccount(null);
+    accountSessionLoaded = true;
+    accountWishlistLoaded = false;
+    favorites.clear();
+    guestFavorites.clear();
+    saveStore("forme-favorites", []);
+    renderProducts();
     setAccountMode("signin");
     $("#loginMessage").textContent = "You have signed out.";
-    $("#loginEmail").focus();
+    $("#loginIdentifier").focus();
   } catch (error) {
     $("#accountMessage").textContent = error.message;
   } finally {
@@ -651,8 +824,26 @@ $("#accountSignedIn").addEventListener("click", async (event) => {
 });
 $("#cartButton").addEventListener("click", openCart);
 $("#closeCart").addEventListener("click", closeCart);
-$("#drawerScrim").addEventListener("click", closeCart);
+$("#drawerScrim").addEventListener("click", () => {
+  closeCart();
+  closeWishlist();
+});
 $("#continueShopping").addEventListener("click", closeCart);
+$("#wishlistButton").addEventListener("click", openWishlist);
+$("#closeWishlist").addEventListener("click", closeWishlist);
+$("#continueWishlist").addEventListener("click", closeWishlist);
+$("#wishlistItems").addEventListener("click", (event) => {
+  const removeButton = event.target.closest("[data-wishlist-remove]");
+  const viewButton = event.target.closest("[data-wishlist-view]");
+  if (removeButton) {
+    setWishlistMembership(removeButton.dataset.wishlistRemove, false);
+  }
+  if (viewButton) {
+    const id = viewButton.dataset.wishlistView;
+    closeWishlist();
+    openProductDetails(id);
+  }
+});
 $("#cartItems").addEventListener("click", (event) => {
   const quantity = event.target.closest("[data-quantity]");
   const remove = event.target.closest("[data-remove]");
@@ -714,6 +905,7 @@ document.addEventListener("keydown", (event) => {
     $("#loginModal").classList.add("hidden");
     closeProductDetails();
     closeCart();
+    closeWishlist();
   }
 });
 
